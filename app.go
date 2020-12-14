@@ -133,7 +133,7 @@ func getDeviceState(w http.ResponseWriter, r *http.Request){
 	// Get IP Addr from DB
 	rows, err := db.Query("SELECT Serial, Ip, Port FROM aqman WHERE Serial=$1", s)
 	if err != nil{
-		log.Fatalln(err)
+		log.Println(err)
 	}
 	var serial string
 	var ip string
@@ -161,16 +161,15 @@ func getDeviceState(w http.ResponseWriter, r *http.Request){
 
 	resp, err := http.Get(addr)
 	if err != nil{
-		log.Fatalln(err)
+		log.Println(err)
 	}
 
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil{
-		log.Fatalln(err)
+		log.Println(err)
 	}
-	// fmt.Printf("%s\n", body)
 
 	var deviceinfo DeviceInfo
 
@@ -197,8 +196,28 @@ func postDeviceState(w http.ResponseWriter, r *http.Request){
 		statement,_ := db.Prepare(sql_table)
 		statement.Exec()
 
-		statement,_ = db.Prepare(`INSERT OR REPLACE INTO aqman (Serial,Ip,Port,InsertedDateTime) VALUES (?,?,?,?)`)
-		statement.Exec(networkinfo.AqmSerial, networkinfo.IP, networkinfo.Port, networkinfo.UpdateTime)
-		statement.Close()
+		if DeviceExists(db, networkinfo.AqmSerial){
+			statement,_ = db.Prepare(`UPDATE aqman SET Ip=?, Port=?, InsertedDateTime=? WHERE Serial=?`)
+			statement.Exec(networkinfo.IP, networkinfo.Port, networkinfo.UpdateTime, networkinfo.AqmSerial)
+			statement.Close()
+		} else{
+			statement,_ = db.Prepare(`INSERT INTO aqman (Serial,Ip,Port,InsertedDateTime) VALUES (?,?,?,?)`)
+			statement.Exec(networkinfo.AqmSerial, networkinfo.IP, networkinfo.Port, networkinfo.UpdateTime)
+			statement.Close()
+		}
 	}
+}
+
+func DeviceExists(db * sql.DB, deviceserial string) bool {
+    sqlStmt := `SELECT Serial FROM aqman WHERE Serial = ?;`
+	err := db.QueryRow(sqlStmt, deviceserial).Scan(&deviceserial)
+    if err != nil {
+		if err != sql.ErrNoRows {
+            // a real error happened! you should change your function return
+            // to "(bool, error)" and return "false, err" here
+            log.Print(err)
+        }
+        return false
+	}
+    return true
 }
