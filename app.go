@@ -11,6 +11,7 @@ import(
 	"strings"
 	"io/ioutil"
 	"fmt"
+	"os"
 )
 
 var db *sql.DB
@@ -64,12 +65,28 @@ var devices []DeviceDetailed
 var deviceinfos []DeviceInfo
 
 func main(){
+	// Create directory
+	var dbpath string 
+	dbpath = "/home/hkder/go/aqmandb"
+
+	if _, err := os.Stat(dbpath); os.IsNotExist(err){
+		err = os.Mkdir(dbpath, 0755)
+		if err != nil{
+			log.Println(err)
+		}
+	}
+
 	// Initialize Database
 	var err error
-	db, err = sql.Open("sqlite3", "./aqman.db")
+	db, err = sql.Open("sqlite3", "/home/hkder/go/aqmandb/aqman.db")
 	if err != nil{
 		log.Fatalln(err)
 	}
+
+	// Create Table aqman
+	sql_table := `CREATE TABLE IF NOT EXISTS aqman (id INTEGER PRIMARY KEY, Serial TEXT, Ip TEXT, Port TEXT, InsertedDateTime DATETIME);`
+	statement,_ := db.Prepare(sql_table)
+	statement.Exec()
 
 	// Create Router
 	r := mux.NewRouter()
@@ -152,7 +169,7 @@ func getDeviceState(w http.ResponseWriter, r *http.Request){
 			ErrorDict: ErrorDict{
 				Code: "NoDeviceFound",
 				Message: "The request is malformed.",
-				Details: "The requested Aqman is Not Yet Installed.",
+				Details: "The requested Aqman is Not Yet Installed. Not Present in DB",
 			},
 		}
 		json.NewEncoder(w).Encode(customError)
@@ -162,6 +179,17 @@ func getDeviceState(w http.ResponseWriter, r *http.Request){
 	resp, err := http.Get(addr)
 	if err != nil{
 		log.Println(err)
+		w.WriteHeader(400)
+		var customError CustomError
+		customError = CustomError{
+			ErrorDict: ErrorDict{
+				Code: "NoResponseFromDevice",
+				Message: "Possible Aqman Edge Problem",
+				Details: "The Device is Registered in DB but Aqman Edge does not respond. Possible Wrong IP Set for AqmanEdge. Please Reset AqmanEdge and Check AqmanEdge IP",
+			},
+		}
+		json.NewEncoder(w).Encode(customError)
+		return
 	}
 
 	defer resp.Body.Close()
@@ -192,16 +220,12 @@ func postDeviceState(w http.ResponseWriter, r *http.Request){
 	if s != networkinfo.AqmSerial{
 		log.Fatal("Device Response does not match Post Request")
 	} else{
-		sql_table := `CREATE TABLE IF NOT EXISTS aqman (id INTEGER PRIMARY KEY, Serial TEXT, Ip TEXT, Port TEXT, InsertedDateTime DATETIME);`
-		statement,_ := db.Prepare(sql_table)
-		statement.Exec()
-
 		if DeviceExists(db, networkinfo.AqmSerial){
-			statement,_ = db.Prepare(`UPDATE aqman SET Ip=?, Port=?, InsertedDateTime=? WHERE Serial=?`)
+			statement,_ := db.Prepare(`UPDATE aqman SET Ip=?, Port=?, InsertedDateTime=? WHERE Serial=?`)
 			statement.Exec(networkinfo.IP, networkinfo.Port, networkinfo.UpdateTime, networkinfo.AqmSerial)
 			statement.Close()
 		} else{
-			statement,_ = db.Prepare(`INSERT INTO aqman (Serial,Ip,Port,InsertedDateTime) VALUES (?,?,?,?)`)
+			statement,_ := db.Prepare(`INSERT INTO aqman (Serial,Ip,Port,InsertedDateTime) VALUES (?,?,?,?)`)
 			statement.Exec(networkinfo.AqmSerial, networkinfo.IP, networkinfo.Port, networkinfo.UpdateTime)
 			statement.Close()
 		}
