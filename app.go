@@ -12,6 +12,7 @@ import(
 	"io/ioutil"
 	"fmt"
 	"os"
+    "gopkg.in/natefinch/lumberjack.v2"
 )
 
 var db *sql.DB
@@ -25,6 +26,10 @@ type Device struct {
 type DeviceDetailed struct {
 	Device Device
 	InstallTime time.Time `json:"install_time"`
+}
+
+type Devices struct{
+	DeviceList []string `json:"devices"`
 }
 
 type ErrorDict struct {
@@ -48,7 +53,7 @@ type DeviceInfo struct {
 	Pm2d5 int `json:"pm2d5"`
 	Pm10 int `json:"pm10"`
 	Radon int `json:"radon"`
- 	Tvoc int `json:"tvoc"`
+    Tvoc int `json:"tvoc"`
 }
 
 type NetworkInfo struct {
@@ -61,13 +66,22 @@ type NetworkInfo struct {
 	UpdateTime time.Time `json:"dt"`
 }
 
-var devices []DeviceDetailed
-var deviceinfos []DeviceInfo
-
 func main(){
+    // Configure Logging
+    LOG_FILE_LOCATION := os.Getenv("LOG_FILE_LOCATION")
+    if LOG_FILE_LOCATION != "" {
+        log.SetOutput(&lumberjack.Logger{
+            Filename: LOG_FILE_LOCATION,
+            MaxSize: 500,
+            MaxBackups: 3,
+            MaxAge: 28,
+            Compress: true,
+        })
+    }
+
 	// Create directory
-	var dbpath string 
-	dbpath = "/home/hkder/go/aqmandb"
+	var dbpath string
+	dbpath = "/usr/src/aqmandb"
 
 	if _, err := os.Stat(dbpath); os.IsNotExist(err){
 		err = os.Mkdir(dbpath, 0755)
@@ -78,7 +92,7 @@ func main(){
 
 	// Initialize Database
 	var err error
-	db, err = sql.Open("sqlite3", "/home/hkder/go/aqmandb/aqman.db")
+	db, err = sql.Open("sqlite3", "/usr/src/aqmandb/aqman.db")
 	if err != nil{
 		log.Fatalln(err)
 	}
@@ -90,62 +104,45 @@ func main(){
 
 	// Create Router
 	r := mux.NewRouter()
-	// r.HandleFunc("/hello", getHassInfo).Methods("GET")
 	r.HandleFunc("/api/devices", getDeviceList).Methods("GET")
-	r.HandleFunc("/api/devices", postDeviceToList).Methods("POST")
 	r.HandleFunc("/api/device/{sn}", getDeviceState).Methods("GET")
 	r.HandleFunc("/api/device/{sn}", postDeviceState).Methods("POST")
 
 	// Start Web Server
-	log.Println("Starting Server at port 8297")
-	http.ListenAndServe(":8297", r)
-}
+    PORT := os.Getenv("SERVER_PORT")
+    startLog := fmt.Sprintf("Starting Server at port %v", PORT)
+	log.Println(startLog)
 
-func getHassInfo(w http.ResponseWriter, r *http.Request){
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode("Hello")
+    serverAddr := fmt.Sprintf(":%v", PORT)
+	http.ListenAndServe(serverAddr, r)
 }
 
 func getDeviceList(w http.ResponseWriter, r *http.Request){
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(devices)
-}
 
-func postDeviceToList(w http.ResponseWriter, r *http.Request){
-	w.Header().Set("Content-Type", "application/json")
-	var device Device
-	var deviceDetailed DeviceDetailed
-
-	_ = json.NewDecoder(r.Body).Decode(&device)
-
-	if (device.AqmanSerial == "" || device.FwVersion == "") {
-		w.WriteHeader(400)
-		var customError CustomError
-		customError = CustomError{
-			ErrorDict: ErrorDict{
-				Code: "ConstraintViolationError",
-				Message: "The request is malformed.",
-				Details: "need Aqman Serial Number and Firmware Version in request body.",
-			},
-		}
-		json.NewEncoder(w).Encode(customError)
-		return
-	}	
-
-	deviceDetailed = DeviceDetailed{
-		Device: device,
-		InstallTime: time.Now(),
+	rows, err := db.Query("SELECT Serial FROM aqman")
+	if err != nil{
+		log.Println(err)
 	}
-	devices = append(devices, deviceDetailed)
-	json.NewEncoder(w).Encode(deviceDetailed)
+
+	var devices []string
+	var customDevices Devices
+
+	var serial string
+	for rows.Next(){
+		rows.Scan(&serial)
+		devices = append(devices, serial)
+	}
+
+	customDevices.DeviceList = devices
+
+	json.NewEncoder(w).Encode(customDevices)
 }
 
 func getDeviceState(w http.ResponseWriter, r *http.Request){
 	w.Header().Set("Content-Type", "application/json")
 	ss := strings.Split(r.URL.Path, "/")
 	s := ss[len(ss)-1]
-	
-	// var deviceinfo DeviceInfo
 
 	// Get IP Addr from DB
 	rows, err := db.Query("SELECT Serial, Ip, Port FROM aqman WHERE Serial=$1", s)
@@ -178,17 +175,32 @@ func getDeviceState(w http.ResponseWriter, r *http.Request){
 
 	resp, err := http.Get(addr)
 	if err != nil{
-		log.Println(err)
-		w.WriteHeader(400)
-		var customError CustomError
-		customError = CustomError{
-			ErrorDict: ErrorDict{
-				Code: "NoResponseFromDevice",
-				Message: "Possible Aqman Edge Problem",
-				Details: "The Device is Registered in DB but Aqman Edge does not respond. Possible Wrong IP Set for AqmanEdge. Please Reset AqmanEdge and Check AqmanEdge IP",
-			},
-		}
-		json.NewEncoder(w).Encode(customError)
+		// log.Println(err)
+		// w.WriteHeader(400)
+		// var customError CustomError
+		// customError = CustomError{
+		// 	ErrorDict: ErrorDict{
+		// 		Code: "NoResponseFromDevice",
+		// 		Message: "Possible Aqman Edge Problem",
+		// 		Details: "The Device is Registered in DB but Aqman Edge does not respond. Possible Wrong IP Set for AqmanEdge. Please Reset AqmanEdge and Check AqmanEdge IP",
+		// 	},
+		// }
+		// json.NewEncoder(w).Encode(customError)
+
+		var deviceinfo DeviceInfo
+		deviceinfo.Aqm101_sn = s
+		deviceinfo.Dsm101_sn = s
+		deviceinfo.Temperature = -1
+		deviceinfo.Humidity = -1
+		deviceinfo.Co2 = -1
+		deviceinfo.Pm1 = -1
+		deviceinfo.Pm2d5 = -1
+		deviceinfo.Pm10 = -1
+		deviceinfo.Radon = -1
+		deviceinfo.Tvoc = -1
+		deviceinfo.UpdateTime = time.Now()
+		json.NewEncoder(w).Encode(deviceinfo)
+
 		return
 	}
 
@@ -212,7 +224,7 @@ func postDeviceState(w http.ResponseWriter, r *http.Request){
 	ss := strings.Split(r.URL.Path, "/")
 	s := ss[len(ss)-1]
 
-	var networkinfo NetworkInfo 
+	var networkinfo NetworkInfo
 	_ = json.NewDecoder(r.Body).Decode(&networkinfo)
 	networkinfo.UpdateTime = time.Now()
 	log.Println(networkinfo)
